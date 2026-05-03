@@ -1,0 +1,23 @@
+# Compiled Binaries / Object files
+*.o
+*.obj
+*.exe
+*.out
+
+# Build directories
+build/
+obj/
+bin/
+
+# Python temporary files
+__pycache__/
+*.pyc
+
+# IDE and OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.agents/
+.gemini/
+*.log

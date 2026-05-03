@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  chat-server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    image: cpp-chat-server:latest
+    container_name: cpp-chat-server
+    ports:
+      - "8080:8080"
+    stdin_open: true # Allows interaction if needed
+    tty: true        # Allocates a pseudo-TTY
+    restart: unless-stopped
