@@ -2,6 +2,7 @@
 
 #include "session.hpp"
 #include "room.hpp"
+#include "database.hpp"
 #include <boost/asio.hpp>
 #include <map>
 #include <set>
@@ -27,17 +28,24 @@ public:
     std::vector<std::string> get_rooms() const;
     std::vector<std::string> get_users() const;
 
+    // Database integrations
+    bool register_db_user(const std::string& username, const std::string& password);
+    bool authenticate_db_user(const std::string& username, const std::string& password);
+    void send_history_to_session(const std::shared_ptr<chat_session>& session, const std::string& target);
+    bool is_user_online(const std::string& username) const;
+
 private:
     void do_accept();
 
+    boost::asio::io_context& io_context_;
     boost::asio::ip::tcp::acceptor acceptor_;
     
-    // Rooms and user mapping (Note: Boost.Asio's single-threaded io_context runs 
-    // synchronously on one thread, so mutexes are not strictly needed if we 
-    // run io_context.run() on a single thread. However, we keep things clean and modular)
     std::map<std::string, std::shared_ptr<chat_room>> rooms_;
     std::map<std::string, std::shared_ptr<chat_session>> online_users_;
     std::set<std::shared_ptr<chat_session>> anonymous_sessions_;
+
+    // Persistent Database
+    Database db_;
 };
 
 } // namespace chat

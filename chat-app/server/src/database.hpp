@@ -1,0 +1,245 @@
+#pragma once
+
+#include <string>
+#include <vector>
+#include <fstream>
+#include <sstream>
+#include <mutex>
+#include <iomanip>
+#include <iostream>
+#include <filesystem>
+#include <chrono>
+#include <algorithm>
+
+namespace chat {
+
+// Simple, clean header-only SHA-256 implementation
+class SHA256 {
+public:
+    static std::string hash(const std::string& input) {
+        uint32_t h0 = 0x6a09e667, h1 = 0xbb67ae85, h2 = 0x3c6ef372, h3 = 0xa54ff53a;
+        uint32_t h4 = 0x510e527f, h5 = 0x9b05688c, h6 = 0x1f83d9ab, h7 = 0x5be0cd19;
+
+        std::vector<uint8_t> msg(input.begin(), input.end());
+        uint64_t bit_len = msg.size() * 8;
+        
+        // Pad message
+        msg.push_back(0x80);
+        while ((msg.size() * 8) % 512 != 448) {
+            msg.push_back(0x00);
+        }
+        
+        // Append original length in bits as 64-bit big-endian integer
+        for (int i = 7; i >= 0; --i) {
+            msg.push_back(static_cast<uint8_t>((bit_len >> (i * 8)) & 0xFF));
+        }
+
+        // Process message in 512-bit chunks
+        for (size_t chunk = 0; chunk < msg.size() / 64; ++chunk) {
+            uint32_t w[64] = {0};
+            for (int i = 0; i < 16; ++i) {
+                w[i] = (msg[chunk * 64 + i * 4] << 24) |
+                       (msg[chunk * 64 + i * 4 + 1] << 16) |
+                       (msg[chunk * 64 + i * 4 + 2] << 8) |
+                       (msg[chunk * 64 + i * 4 + 3]);
+            }
+
+            for (int i = 16; i < 64; ++i) {
+                uint32_t s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
+                uint32_t s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
+                w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+            }
+
+            uint32_t a = h0, b = h1, c = h2, d = h3, e = h4, f = h5, g = h6, h = h7;
+
+            static const uint32_t k[64] = {
+                0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+                0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+                0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+                0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+                0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+                0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+                0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+                0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+            };
+
+            for (int i = 0; i < 64; ++i) {
+                uint32_t S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+                uint32_t ch = (e & f) ^ (~e & g);
+                uint32_t temp1 = h + S1 + ch + k[i] + w[i];
+                uint32_t S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+                uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+                uint32_t temp2 = S0 + maj;
+
+                h = g; g = f; f = e; e = d + temp1;
+                d = c; c = b; b = a; a = temp1 + temp2;
+            }
+
+            h0 += a; h1 += b; h2 += c; h3 += d;
+            h4 += e; h5 += f; h6 += g; h7 += h;
+        }
+
+        std::stringstream ss;
+        ss << std::hex << std::setfill('0');
+        ss << std::setw(8) << h0 << std::setw(8) << h1 << std::setw(8) << h2 << std::setw(8) << h3
+           << std::setw(8) << h4 << std::setw(8) << h5 << std::setw(8) << h6 << std::setw(8) << h7;
+        return ss.str();
+    }
+
+private:
+    static inline uint32_t rotr(uint32_t value, unsigned int count) {
+        return (value >> count) | (value << (32 - count));
+    }
+};
+
+struct DBMessage {
+    std::string sender;
+    std::string target; // Room name or target username
+    std::string content;
+    std::string timestamp;
+};
+
+class Database {
+public:
+    explicit Database(const std::string& db_dir = "database") : db_dir_(db_dir) {
+        std::filesystem::create_directories(db_dir_);
+        users_file_ = db_dir_ + "/users.txt";
+        history_file_ = db_dir_ + "/history.txt";
+    }
+
+    // Attempt to register a user. Returns false if user already exists
+    bool register_user(const std::string& username, const std::string& password) {
+        std::lock_guard<std::mutex> lock(db_mutex_);
+        if (user_exists_internal(username)) {
+            return false;
+        }
+
+        std::ofstream file(users_file_, std::ios::app);
+        if (file.is_open()) {
+            std::string hashed_pw = SHA256::hash(password);
+            file << username << " " << hashed_pw << "\n";
+            std::cout << "[DB] Registered new user: " << username << std::endl;
+            return true;
+        }
+        return false;
+    }
+
+    // Authenticate user credentials
+    bool authenticate_user(const std::string& username, const std::string& password) {
+        std::lock_guard<std::mutex> lock(db_mutex_);
+        std::ifstream file(users_file_);
+        if (!file.is_open()) return false;
+
+        std::string db_user, db_hash;
+        std::string input_hash = SHA256::hash(password);
+        while (file >> db_user >> db_hash) {
+            if (db_user == username) {
+                return db_hash == input_hash;
+            }
+        }
+        return false;
+    }
+
+    // Log chat message to database history
+    void save_message(const std::string& sender, const std::string& target, const std::string& content) {
+        std::lock_guard<std::mutex> lock(db_mutex_);
+        std::ofstream file(history_file_, std::ios::app);
+        if (file.is_open()) {
+            auto now = std::chrono::system_clock::now();
+            auto time = std::chrono::system_clock::to_time_t(now);
+            
+            // Clean content from '|' and newlines to preserve file format
+            std::string clean_content = content;
+            std::replace(clean_content.begin(), clean_content.end(), '|', ' ');
+            std::replace(clean_content.begin(), clean_content.end(), '\n', ' ');
+            std::replace(clean_content.begin(), clean_content.end(), '\r', ' ');
+
+            std::stringstream ss;
+            ss << std::put_time(std::localtime(&time), "%Y-%m-%d %H:%M:%S");
+            
+            file << ss.str() << "|" << sender << "|" << target << "|" << clean_content << "\n";
+        }
+    }
+
+    // Retrieve recent history messages (limit 20)
+    std::vector<DBMessage> get_history(const std::string& target, size_t limit = 20) {
+        std::lock_guard<std::mutex> lock(db_mutex_);
+        std::ifstream file(history_file_);
+        std::vector<DBMessage> all_matching;
+
+        if (!file.is_open()) return all_matching;
+
+        std::string line;
+        while (std::getline(file, line)) {
+            std::stringstream ss(line);
+            std::string ts, sender, db_target, content;
+            
+            if (std::getline(ss, ts, '|') &&
+                std::getline(ss, sender, '|') &&
+                std::getline(ss, db_target, '|') &&
+                std::getline(ss, content, '|')) {
+                
+                // Target could be a Room (e.g. "lobby") or a Private Conversation
+                // For PMs, we match either sender=A & target=B OR sender=B & target=A
+                bool match = false;
+                if (target.rfind("PM:", 0) == 0) {
+                    std::string target_user = target.substr(3); // Remove "PM:"
+                    // Private message record target is just the recipient username
+                    if ((sender == target_user && db_target.rfind("PM:", 0) == 0 && db_target.substr(3) == "") || 
+                        (db_target == target) || 
+                        (sender == target_user && db_target.substr(0, 3) != "PM:") || // historical or legacy
+                        // Correct PM target matching:
+                        (db_target == "PM:" + sender && target == "PM:" + target_user) ||
+                        (db_target == "PM:" + target_user && target == "PM:" + sender) ||
+                        (db_target == "PM:" + target_user && sender == target_user) // self messaging
+                    ) {
+                        // Let's refine matching: PM target format is PM:recipient
+                        // In DB target can be "PM:recipient"
+                        // Or if sender is Alice and receiver is Bob, target in database is stored as "PM:Bob"
+                        // Match condition: (db_target == "PM:Bob" and sender == Alice and target_user == Bob)
+                        // OR (db_target == "PM:Alice" and sender == Bob and target_user == Bob)
+                        std::string pm_a = "PM:" + target_user;
+                        std::string pm_b = "PM:" + sender;
+                        if ((db_target == pm_a) || (db_target == pm_b && sender == target_user)) {
+                            match = true;
+                        }
+                    }
+                } else {
+                    // Room message matching
+                    if (db_target == target) {
+                        match = true;
+                    }
+                }
+
+                if (match) {
+                    all_matching.push_back({sender, db_target, content, ts});
+                }
+            }
+        }
+
+        // Apply limit to recent messages
+        if (all_matching.size() > limit) {
+            return std::vector<DBMessage>(all_matching.end() - limit, all_matching.end());
+        }
+        return all_matching;
+    }
+
+private:
+    bool user_exists_internal(const std::string& username) {
+        std::ifstream file(users_file_);
+        if (!file.is_open()) return false;
+
+        std::string db_user, db_hash;
+        while (file >> db_user >> db_hash) {
+            if (db_user == username) return true;
+        }
+        return false;
+    }
+
+    std::string db_dir_;
+    std::string users_file_;
+    std::string history_file_;
+    std::mutex db_mutex_;
+};
+
+} // namespace chat
