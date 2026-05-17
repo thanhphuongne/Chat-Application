@@ -5,23 +5,24 @@ import threading
 import struct
 import queue
 import sys
+import time
 
-# Color Palette (Modern Dark Theme)
-BG_COLOR = "#121212"       # Dark background
-SIDEBAR_COLOR = "#1f1f1f"  # Sidebar grey
-CHAT_BG = "#181818"       # Chat area dark
-ACCENT_COLOR = "#00adb5"   # Cyan highlight
-TEXT_COLOR = "#eeeeee"     # Primary text
-MUTED_TEXT = "#8c8c8c"     # Secondary/Muted text
-BUBBLE_OTHER = "#2d2d2d"   # Bubble for other users
-BUBBLE_ME = "#0f4c5c"      # Bubble for current user
-SYSTEM_COLOR = "#393e46"   # System notification box
+# Color Palette (Premium Material Dark)
+BG_COLOR = "#121212"         # Deep black background
+SIDEBAR_COLOR = "#1e1e1e"    # Dark grey for sidebar
+CHAT_BG = "#151515"          # Dark charcoal for chat area
+ACCENT_COLOR = "#00adb5"     # Teal cyan for accents/buttons
+TEXT_COLOR = "#eeeeee"       # White text
+MUTED_TEXT = "#7a7a7a"       # Secondary muted grey text
+BUBBLE_ME = "#005f73"        # Deep ocean teal for own messages
+BUBBLE_OTHER = "#2b2d42"     # Slate blue-grey for other messages
+SYSTEM_COLOR = "#1e2022"     # Dark notification box
 
 class ChatGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("CppChat - Real-time Client")
-        self.root.geometry("900x600")
+        self.root.title("CppChat - Professional Client")
+        self.root.geometry("950x650")
         self.root.configure(bg=BG_COLOR)
 
         self.sock = None
@@ -29,15 +30,15 @@ class ChatGUI:
         self.stop_event = threading.Event()
         self.msg_queue = queue.Queue()
 
-        # Chat history mapping: { "room_name": "history text...", "PM:username": "history text..." }
+        # Chat history maps: { "target": [ {"sender": "x", "content": "y", "ts": "z"}, ... ] }
         self.chat_histories = {}
-        self.current_target = ""  # Active room or user PM (e.g. "lobby" or "PM:Alice")
-
-        # Set up modern styles
+        self.current_target = "" # Active room or private chat (e.g. "lobby" or "PM:Alice")
+        
+        self.online_users_list = []
+        self.active_rooms_list = []
+        
         self.setup_styles()
-
-        # Initial login screen
-        self.show_login_screen()
+        self.show_auth_screen()
 
     def setup_styles(self):
         style = ttk.Style()
@@ -47,14 +48,19 @@ class ChatGUI:
         style.configure('Sidebar.TFrame', background=SIDEBAR_COLOR)
         style.configure('TLabel', background=BG_COLOR, foreground=TEXT_COLOR)
         style.configure('Sidebar.TLabel', background=SIDEBAR_COLOR, foreground=TEXT_COLOR)
-        style.configure('Header.TLabel', background=BG_COLOR, foreground=ACCENT_COLOR, font=("Segoe UI", 14, "bold"))
+        style.configure('Header.TLabel', background=BG_COLOR, foreground=ACCENT_COLOR, font=("Segoe UI", 15, "bold"))
         
+        # Tabs Style
+        style.configure('TNotebook', background=BG_COLOR, borderwidth=0)
+        style.configure('TNotebook.Tab', background=SIDEBAR_COLOR, foreground=MUTED_TEXT, padding=[10, 5], font=("Segoe UI", 9, "bold"))
+        style.map('TNotebook.Tab', background=[('selected', BG_COLOR)], foreground=[('selected', ACCENT_COLOR)])
+
         style.configure('TButton', background=ACCENT_COLOR, foreground="#ffffff", borderwidth=0, font=("Segoe UI", 10, "bold"))
         style.map('TButton', background=[('active', '#007f87')])
 
-        style.configure('TEntry', fieldbackground="#2d2d2d", foreground=TEXT_COLOR, insertcolor=TEXT_COLOR, borderwidth=0)
-        style.configure('Sidebar.TButton', background="#393e46", foreground=TEXT_COLOR, font=("Segoe UI", 9))
-        style.map('Sidebar.TButton', background=[('active', '#2d2d2d')])
+        style.configure('TEntry', fieldbackground="#2b2b2b", foreground=TEXT_COLOR, insertcolor=TEXT_COLOR, borderwidth=0)
+        style.configure('Sidebar.TButton', background="#2b2b2b", foreground=TEXT_COLOR, font=("Segoe UI", 9))
+        style.map('Sidebar.TButton', background=[('active', '#3a3a3a')])
 
     def pack_msg(self, payload: str) -> bytes:
         payload_bytes = payload.encode('utf-8')
@@ -69,88 +75,152 @@ class ChatGUI:
             data += packet
         return data
 
-    def show_login_screen(self):
-        self.login_frame = ttk.Frame(self.root)
-        self.login_frame.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
+    def show_auth_screen(self):
+        self.auth_frame = ttk.Frame(self.root)
+        self.auth_frame.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
 
-        title_lbl = ttk.Label(self.login_frame, text="CONNECT TO CPPCHAT", style="Header.TLabel")
+        title_lbl = ttk.Label(self.auth_frame, text="🔒 CPPCHAT SECURED", style="Header.TLabel")
         title_lbl.pack(pady=20)
 
-        # Host Entry
-        ttk.Label(self.login_frame, text="Server Host:").pack(anchor=tk.W, pady=2)
-        self.host_entry = ttk.Entry(self.login_frame, width=30)
-        self.host_entry.insert(0, "127.0.0.1")
-        self.host_entry.pack(pady=5)
-
-        # Port Entry
-        ttk.Label(self.login_frame, text="Server Port:").pack(anchor=tk.W, pady=2)
-        self.port_entry = ttk.Entry(self.login_frame, width=30)
-        self.port_entry.insert(0, "8080")
-        self.port_entry.pack(pady=5)
-
-        # Username Entry
-        ttk.Label(self.login_frame, text="Username:").pack(anchor=tk.W, pady=2)
-        self.user_entry = ttk.Entry(self.login_frame, width=30)
-        self.user_entry.pack(pady=5)
-        self.user_entry.focus()
-
-        self.connect_btn = ttk.Button(self.login_frame, text="Connect & Login", command=self.attempt_login)
-        self.connect_btn.pack(pady=25, fill=tk.X)
+        # Host/Port Settings Frame
+        net_frame = ttk.Frame(self.auth_frame)
+        net_frame.pack(fill=tk.X, pady=5)
         
-        self.root.bind('<Return>', lambda e: self.attempt_login())
+        ttk.Label(net_frame, text="Server:").grid(row=0, column=0, sticky="w", padx=5)
+        self.host_entry = ttk.Entry(net_frame, width=15)
+        self.host_entry.insert(0, "127.0.0.1")
+        self.host_entry.grid(row=0, column=1, padx=5)
 
-    def attempt_login(self):
+        ttk.Label(net_frame, text="Port:").grid(row=0, column=2, sticky="w", padx=5)
+        self.port_entry = ttk.Entry(net_frame, width=6)
+        self.port_entry.insert(0, "8080")
+        self.port_entry.grid(row=0, column=3, padx=5)
+
+        # Tabbed Login / Register Selector
+        self.notebook = ttk.Notebook(self.auth_frame)
+        self.notebook.pack(pady=15, fill=tk.BOTH, expand=True)
+
+        # Tab 1: Login
+        self.login_tab = ttk.Frame(self.notebook, padding=15)
+        self.notebook.add(self.login_tab, text="LOGIN")
+
+        ttk.Label(self.login_tab, text="Username:").pack(anchor=tk.W, pady=2)
+        self.login_user = ttk.Entry(self.login_tab, width=32)
+        self.login_user.pack(pady=5)
+        
+        ttk.Label(self.login_tab, text="Password:").pack(anchor=tk.W, pady=2)
+        self.login_pass = ttk.Entry(self.login_tab, show="*", width=32)
+        self.login_pass.pack(pady=5)
+
+        login_btn = ttk.Button(self.login_tab, text="Secure Log In", command=self.attempt_login)
+        login_btn.pack(pady=20, fill=tk.X)
+
+        # Tab 2: Register
+        self.reg_tab = ttk.Frame(self.notebook, padding=15)
+        self.notebook.add(self.reg_tab, text="REGISTER")
+
+        ttk.Label(self.reg_tab, text="Desired Username:").pack(anchor=tk.W, pady=2)
+        self.reg_user = ttk.Entry(self.reg_tab, width=32)
+        self.reg_user.pack(pady=5)
+
+        ttk.Label(self.reg_tab, text="Password:").pack(anchor=tk.W, pady=2)
+        self.reg_pass = ttk.Entry(self.reg_tab, show="*", width=32)
+        self.reg_pass.pack(pady=5)
+
+        reg_btn = ttk.Button(self.reg_tab, text="Create Account", command=self.attempt_register)
+        reg_btn.pack(pady=20, fill=tk.X)
+
+    def attempt_connect(self) -> bool:
+        if self.sock:
+            try:
+                self.sock.close()
+            except:
+                pass
+
         host = self.host_entry.get().strip()
         port_str = self.port_entry.get().strip()
-        username = self.user_entry.get().strip()
-
-        if not host or not port_str or not username:
-            messagebox.showerror("Error", "All fields are required!")
-            return
 
         try:
             port = int(port_str)
-        except ValueError:
-            messagebox.showerror("Error", "Port must be an integer!")
-            return
-
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.connect((host, port))
+            return True
         except Exception as e:
-            messagebox.showerror("Connection Failed", f"Could not connect to {host}:{port}\nError: {e}")
+            messagebox.showerror("Connection Error", f"Could not connect to {host}:{port_str}\nError: {e}")
+            return False
+
+    def attempt_login(self):
+        username = self.login_user.get().strip()
+        password = self.login_pass.get()
+
+        if not username or not password:
+            messagebox.showerror("Error", "Username and password required!")
             return
 
-        # Send login command
+        if not self.attempt_connect():
+            return
+
         try:
-            self.sock.sendall(self.pack_msg(f"LOGIN|{username}"))
+            self.sock.sendall(self.pack_msg(f"LOGIN|{username}|{password}"))
             
-            # Read response synchronously first to verify login
+            # Read verification response synchronously
             header = self.read_exact(4)
             if not header:
-                raise Exception("Server closed connection.")
+                raise Exception("Server terminated link.")
             length = struct.unpack('>I', header)[0]
             payload = self.read_exact(length).decode('utf-8')
             
             parts = payload.split('|')
             if parts[0] == "LOGIN_SUCCESS":
                 self.username = username
-                self.login_frame.destroy()
+                self.auth_frame.destroy()
                 self.build_chat_interface()
                 
-                # Start background receiver thread
-                self.root.unbind('<Return>')
+                # Start receiver thread
                 self.receiver_thread = threading.Thread(target=self.receive_loop, daemon=True)
                 self.receiver_thread.start()
-                
-                # Periodically process queue messages in the main GUI thread
                 self.root.after(100, self.process_queue)
             else:
-                reason = parts[1] if len(parts) > 1 else "Unknown error"
-                messagebox.showerror("Login Failed", f"Server rejected username:\n{reason}")
+                reason = parts[1] if len(parts) > 1 else "Invalid credentials."
+                messagebox.showerror("Login Failed", f"Access Denied:\n{reason}")
                 self.sock.close()
         except Exception as e:
-            messagebox.showerror("Error", f"Failed during login negotiation:\n{e}")
+            messagebox.showerror("Error", f"Login sequence failed:\n{e}")
+            self.sock.close()
+
+    def attempt_register(self):
+        username = self.reg_user.get().strip()
+        password = self.reg_pass.get()
+
+        if not username or not password:
+            messagebox.showerror("Error", "Desired username and password required!")
+            return
+
+        if not self.attempt_connect():
+            return
+
+        try:
+            self.sock.sendall(self.pack_msg(f"REGISTER|{username}|{password}"))
+            
+            header = self.read_exact(4)
+            if not header:
+                raise Exception("Server closed socket.")
+            length = struct.unpack('>I', header)[0]
+            payload = self.read_exact(length).decode('utf-8')
+            
+            parts = payload.split('|')
+            if parts[0] == "REGISTER_SUCCESS":
+                messagebox.showinfo("Success", f"Account '{username}' created successfully!\nYou can now log in.")
+                self.notebook.select(self.login_tab)
+                self.login_user.delete(0, tk.END)
+                self.login_user.insert(0, username)
+                self.login_pass.focus()
+            else:
+                reason = parts[1] if len(parts) > 1 else "Unknown error"
+                messagebox.showerror("Register Failed", f"Could not create account:\n{reason}")
+            self.sock.close()
+        except Exception as e:
+            messagebox.showerror("Error", f"Register sequence failed:\n{e}")
             self.sock.close()
 
     def receive_loop(self):
@@ -163,7 +233,7 @@ class ChatGUI:
                 length = struct.unpack('>I', header)[0]
                 payload = self.read_exact(length)
                 if not payload:
-                    self.msg_queue.put(("DISCONNECT", "Server connection terminated."))
+                    self.msg_queue.put(("DISCONNECT", "Connection closed by server."))
                     break
                 
                 raw_msg = payload.decode('utf-8')
@@ -195,17 +265,27 @@ class ChatGUI:
         cmd = parts[0]
         args = parts[1:]
 
-        if cmd == "ROOM_JOINED":
+        # Auto PING-PONG heartbeat
+        if cmd == "PING":
+            try:
+                self.sock.sendall(self.pack_msg("PONG"))
+            except:
+                pass
+            return
+
+        elif cmd == "SPAM_WARNING":
+            messagebox.showwarning("Spam Warning", args[0])
+
+        elif cmd == "ROOM_JOINED":
             room_name = args[0]
-            self.add_room_to_sidebar(room_name)
+            self.add_target_to_sidebar(room_name)
             self.switch_chat_target(room_name)
-            self.append_system_msg(room_name, f"You joined room: {room_name}")
+            self.request_history(room_name)
             self.request_list_refresh()
 
         elif cmd == "ROOM_LEFT":
             room_name = args[0]
-            self.remove_room_from_sidebar(room_name)
-            self.append_system_msg(room_name, f"You left room: {room_name}")
+            self.remove_target_from_sidebar(room_name)
             if self.current_target == room_name:
                 self.switch_chat_target("")
 
@@ -224,49 +304,54 @@ class ChatGUI:
         elif cmd == "PRIVATE_MSG":
             sender, text = args[0], args[1]
             target_key = f"PM:{sender}"
-            self.add_pm_to_sidebar(sender)
+            self.add_target_to_sidebar(target_key)
             self.append_chat_msg(target_key, sender, text)
 
         elif cmd == "PRIVATE_CONFIRM":
             target, text = args[0], args[1]
             target_key = f"PM:{target}"
-            self.add_pm_to_sidebar(target)
+            self.add_target_to_sidebar(target_key)
             self.append_chat_msg(target_key, self.username, text)
 
+        elif cmd == "HISTORY_MSG":
+            # Form: HISTORY_MSG|target|sender|content|timestamp
+            target, sender, text, timestamp = args[0], args[1], args[2], args[3]
+            # Since history messages are sent in order, we can append them
+            self.append_chat_msg(target, sender, text, timestamp, is_history=True)
+
         elif cmd == "ROOMS":
-            rooms_list = args[0].split(',') if args and args[0] else []
-            self.update_available_rooms(rooms_list)
+            self.active_rooms_list = args[0].split(',') if args and args[0] else []
+            self.update_stats_display()
 
         elif cmd == "USERS":
-            users_list = args[0].split(',') if args and args[0] else []
-            self.update_online_users(users_list)
+            self.online_users_list = args[0].split(',') if args and args[0] else []
+            self.update_stats_display()
 
         elif cmd == "ERROR":
-            messagebox.showerror("Server Error", args[0])
+            self.append_system_msg(self.current_target, f"Error: {args[0]}")
 
     def build_chat_interface(self):
-        # Configure Grid
         self.root.columnconfigure(0, weight=1)
         self.root.columnconfigure(1, weight=3)
         self.root.rowconfigure(0, weight=1)
 
-        # 1. Sidebar Frame
+        # 1. Sidebar Panel
         sidebar = ttk.Frame(self.root, style="Sidebar.TFrame")
         sidebar.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
         sidebar.columnconfigure(0, weight=1)
-        sidebar.rowconfigure(2, weight=1)  # Expand list box
-        sidebar.rowconfigure(4, weight=1)  # Expand list box
+        sidebar.rowconfigure(4, weight=2)  # Connected Targets List
+        sidebar.rowconfigure(6, weight=1)  # Online Stats List
 
-        # User Profile Label
+        # User Info
         user_lbl = ttk.Label(sidebar, text=f"👤 {self.username}", style="Header.TLabel", background=SIDEBAR_COLOR)
-        user_lbl.grid(row=0, column=0, padx=10, pady=15, sticky="w")
+        user_lbl.grid(row=0, column=0, padx=15, pady=15, sticky="w")
 
-        # Section: Join Room Form
+        # Join Room Input Box
         join_lbl = ttk.Label(sidebar, text="JOIN ROOM", style="Sidebar.TLabel", font=("Segoe UI", 9, "bold"))
-        join_lbl.grid(row=1, column=0, padx=10, pady=(10, 2), sticky="w")
-        
+        join_lbl.grid(row=1, column=0, padx=15, pady=(10, 2), sticky="w")
+
         join_form = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        join_form.grid(row=2, column=0, padx=10, pady=5, sticky="ew")
+        join_form.grid(row=2, column=0, padx=15, pady=5, sticky="ew")
         join_form.columnconfigure(0, weight=3)
         join_form.columnconfigure(1, weight=1)
 
@@ -277,51 +362,63 @@ class ChatGUI:
         join_btn = ttk.Button(join_form, text="Join", command=self.cmd_join_room)
         join_btn.grid(row=0, column=1, sticky="ew")
 
-        # Section: Connected Rooms list
-        rooms_lbl = ttk.Label(sidebar, text="CONNECTED TARGETS", style="Sidebar.TLabel", font=("Segoe UI", 9, "bold"))
-        rooms_lbl.grid(row=3, column=0, padx=10, pady=(15, 2), sticky="w")
+        # Targets Section (Active channels)
+        targets_lbl = ttk.Label(sidebar, text="CONNECTED TARGETS", style="Sidebar.TLabel", font=("Segoe UI", 9, "bold"))
+        targets_lbl.grid(row=3, column=0, padx=15, pady=(15, 2), sticky="w")
 
         self.targets_listbox = tk.Listbox(sidebar, bg=SIDEBAR_COLOR, fg=TEXT_COLOR, bd=0, 
                                           highlightthickness=0, selectbackground=ACCENT_COLOR, 
                                           selectforeground="#ffffff", font=("Segoe UI", 10))
-        self.targets_listbox.grid(row=4, column=0, padx=10, pady=5, sticky="nsew")
+        self.targets_listbox.grid(row=4, column=0, padx=15, pady=5, sticky="nsew")
         self.targets_listbox.bind('<<ListboxSelect>>', self.on_target_selected)
 
-        # Section: Online Users / Server Rooms Info
-        info_frame = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        info_frame.grid(row=5, column=0, padx=10, pady=10, sticky="ew")
-        info_frame.columnconfigure(0, weight=1)
-        info_frame.columnconfigure(1, weight=1)
+        # Global Online/Rooms Stats (Interactive Listbox)
+        stats_lbl = ttk.Label(sidebar, text="ONLINE DIRECTORY (Double click to Join/Chat)", style="Sidebar.TLabel", font=("Segoe UI", 8, "bold"), foreground=ACCENT_COLOR)
+        stats_lbl.grid(row=5, column=0, padx=15, pady=(15, 2), sticky="w")
 
-        refresh_btn = ttk.Button(info_frame, text="🔄 Refresh Stats", command=self.request_list_refresh)
-        refresh_btn.grid(row=0, column=0, columnspan=2, sticky="ew", pady=5)
+        self.stats_listbox = tk.Listbox(sidebar, bg=SIDEBAR_COLOR, fg=MUTED_TEXT, bd=0,
+                                        highlightthickness=0, selectbackground=ACCENT_COLOR,
+                                        selectforeground="#ffffff", font=("Segoe UI", 9))
+        self.stats_listbox.grid(row=6, column=0, padx=15, pady=5, sticky="nsew")
+        self.stats_listbox.bind('<Double-Button-1>', self.on_directory_double_click)
 
-        self.users_lbl = ttk.Label(sidebar, text="Users online: 1 | Active rooms: 0", style="Sidebar.TLabel", font=("Segoe UI", 8), foreground=MUTED_TEXT)
-        self.users_lbl.grid(row=6, column=0, padx=10, pady=5, sticky="w")
+        # Refresh Stats Action
+        refresh_btn = ttk.Button(sidebar, text="🔄 Refresh Directory", command=self.request_list_refresh)
+        refresh_btn.grid(row=7, column=0, padx=15, pady=10, sticky="ew")
+
+        # Connection Status Line
+        self.status_lbl = ttk.Label(sidebar, text="Connection: Secured 🟢", style="Sidebar.TLabel", font=("Segoe UI", 8), foreground=MUTED_TEXT)
+        self.status_lbl.grid(row=8, column=0, padx=15, pady=5, sticky="w")
 
         # 2. Main Chat Frame
         self.chat_frame = ttk.Frame(self.root)
         self.chat_frame.grid(row=0, column=1, sticky="nsew", padx=2, pady=2)
         self.chat_frame.columnconfigure(0, weight=1)
-        self.chat_frame.rowconfigure(1, weight=1) # Chat history area gets weight
+        self.chat_frame.rowconfigure(1, weight=1)
 
-        # Chat Header
-        self.chat_header_lbl = ttk.Label(self.chat_frame, text="Select a room or user from sidebar to start chatting.", style="Header.TLabel")
-        self.chat_header_lbl.grid(row=0, column=0, padx=15, pady=15, sticky="w")
+        # Chat Header Label
+        self.chat_header_lbl = ttk.Label(self.chat_frame, text="Select a channel from directory or sidebar to start chatting.", style="Header.TLabel")
+        self.chat_header_lbl.grid(row=0, column=0, padx=20, pady=15, sticky="w")
 
-        # Chat Display Box
+        # Text display styled to look like bubble chat (using rich tags in Tkinter Text)
         self.chat_display = tk.Text(self.chat_frame, bg=CHAT_BG, fg=TEXT_COLOR, bd=0, 
                                     highlightthickness=0, wrap=tk.WORD, font=("Segoe UI", 11), state=tk.DISABLED)
-        self.chat_display.grid(row=1, column=0, padx=15, pady=5, sticky="nsew")
+        self.chat_display.grid(row=1, column=0, padx=20, pady=5, sticky="nsew")
 
-        # Scrollbar for Chat Box
+        # Tags configuration for custom formatting (looks like real speech bubble alignment)
+        self.chat_display.tag_configure("me_header", justify="right", font=("Segoe UI", 9, "bold"), spacing1=10)
+        self.chat_display.tag_configure("me_bubble", justify="right", rmargin=20, font=("Segoe UI", 10), foreground="#a8e6cf", spacing2=3)
+        self.chat_display.tag_configure("other_header", justify="left", font=("Segoe UI", 9, "bold"), spacing1=10)
+        self.chat_display.tag_configure("other_bubble", justify="left", lmargin1=20, lmargin2=20, font=("Segoe UI", 10), foreground="#ffd3b6", spacing2=3)
+        self.chat_display.tag_configure("sys_msg", justify="center", font=("Segoe UI", 9, "italic"), foreground=MUTED_TEXT, spacing1=10, spacing3=5)
+
         scrollbar = ttk.Scrollbar(self.chat_frame, command=self.chat_display.yview)
         scrollbar.grid(row=1, column=1, sticky="ns", pady=5)
         self.chat_display['yscrollcommand'] = scrollbar.set
 
-        # Input Area Frame
+        # Text input panel
         input_frame = ttk.Frame(self.chat_frame)
-        input_frame.grid(row=2, column=0, columnspan=2, padx=15, pady=15, sticky="ew")
+        input_frame.grid(row=2, column=0, columnspan=2, padx=20, pady=15, sticky="ew")
         input_frame.columnconfigure(0, weight=5)
         input_frame.columnconfigure(1, weight=1)
 
@@ -332,7 +429,7 @@ class ChatGUI:
         self.send_btn = ttk.Button(input_frame, text="Send Message", command=self.send_chat_message)
         self.send_btn.grid(row=0, column=1, sticky="ew", ipady=4)
 
-        # Initial stats request
+        # Initial Refresh
         self.request_list_refresh()
 
     def cmd_join_room(self):
@@ -343,7 +440,7 @@ class ChatGUI:
 
     def send_chat_message(self):
         if not self.current_target:
-            messagebox.showinfo("Hint", "Join a room or click a user first to send messages.")
+            messagebox.showinfo("Hint", "Select a room or online user from directory to chat.")
             return
 
         text = self.msg_entry.get().strip()
@@ -351,11 +448,9 @@ class ChatGUI:
             return
 
         if self.current_target.startswith("PM:"):
-            # Send private message
             target_user = self.current_target.replace("PM:", "")
             self.sock.sendall(self.pack_msg(f"PRIVATE|{target_user}|{text}"))
         else:
-            # Send room message
             self.sock.sendall(self.pack_msg(f"MSG|{self.current_target}|{text}"))
 
         self.msg_entry.delete(0, tk.END)
@@ -365,120 +460,171 @@ class ChatGUI:
             self.sock.sendall(self.pack_msg("LIST_ROOMS"))
             self.sock.sendall(self.pack_msg("LIST_USERS"))
 
-    def add_room_to_sidebar(self, room_name):
-        if room_name not in self.chat_histories:
-            self.chat_histories[room_name] = ""
+    def request_history(self, target):
+        if self.sock:
+            self.sock.sendall(self.pack_msg(f"GET_HISTORY|{target}"))
+
+    def add_target_to_sidebar(self, target_key):
+        if target_key not in self.chat_histories:
+            self.chat_histories[target_key] = []
             self.update_targets_listbox()
 
-    def remove_room_from_sidebar(self, room_name):
-        if room_name in self.chat_histories:
-            del self.chat_histories[room_name]
-            self.update_targets_listbox()
-
-    def add_pm_to_sidebar(self, username):
-        key = f"PM:{username}"
-        if key not in self.chat_histories:
-            self.chat_histories[key] = ""
+    def remove_target_from_sidebar(self, target_key):
+        if target_key in self.chat_histories:
+            del self.chat_histories[target_key]
             self.update_targets_listbox()
 
     def update_targets_listbox(self):
         self.targets_listbox.delete(0, tk.END)
         for key in sorted(self.chat_histories.keys()):
-            display_name = f"💬 [Room] {key}" if not key.startswith("PM:") else f"🔒 [PM] {key.replace('PM:', '')}"
-            self.targets_listbox.insert(tk.END, display_name)
+            display = f"💬 Room: {key}" if not key.startswith("PM:") else f"🔒 PM: {key.replace('PM:', '')}"
+            self.targets_listbox.insert(tk.END, display)
 
     def on_target_selected(self, event):
         selection = self.targets_listbox.curselection()
-        if not selection:
-            return
+        if not selection: return
         
-        index = selection[0]
-        display_name = self.targets_listbox.get(index)
-        
-        # Resolve internal key from display name
-        if "[Room]" in display_name:
-            target_key = display_name.replace("💬 [Room] ", "")
+        display = self.targets_listbox.get(selection[0])
+        if "Room: " in display:
+            target_key = display.replace("💬 Room: ", "")
         else:
-            target_key = "PM:" + display_name.replace("🔒 [PM] ", "")
-
+            target_key = "PM:" + display.replace("🔒 PM: ", "")
+            
         self.switch_chat_target(target_key)
+
+    def on_directory_double_click(self, event):
+        selection = self.stats_listbox.curselection()
+        if not selection: return
+
+        item_str = self.stats_listbox.get(selection[0])
+        if "[User]" in item_str:
+            target_user = item_str.replace("👤 [User] ", "").replace(" (You)", "")
+            if target_user == self.username:
+                return
+            target_key = f"PM:{target_user}"
+            self.add_target_to_sidebar(target_key)
+            self.switch_chat_target(target_key)
+        elif "[Room]" in item_str:
+            room_name = item_str.replace("🏠 [Room] ", "")
+            # Check if already joined, if not, join room
+            if room_name not in self.chat_histories:
+                self.sock.sendall(self.pack_msg(f"JOIN|{room_name}"))
+            else:
+                self.switch_chat_target(room_name)
 
     def switch_chat_target(self, target_key):
         self.current_target = target_key
         if not target_key:
-            self.chat_header_lbl.config(text="Select a room or user from sidebar to start chatting.")
-            self.set_chat_display_content("")
+            self.chat_header_lbl.config(text="Select a channel from directory or sidebar to start chatting.")
+            self.set_chat_display_content([])
         else:
-            title = f"Room: {target_key}" if not target_key.startswith("PM:") else f"Private Chat with {target_key.replace('PM:', '')}"
+            title = f"Room Channel: {target_key}" if not target_key.startswith("PM:") else f"Secure Session with {target_key.replace('PM:', '')}"
             self.chat_header_lbl.config(text=title)
             
-            # Load history
-            history = self.chat_histories.get(target_key, "")
-            self.set_chat_display_content(history)
+            # Load message list from history
+            msgs = self.chat_histories.get(target_key, [])
+            
+            # If history is empty (and we just selected it), pull history from server
+            if not msgs:
+                self.request_history(target_key)
+            
+            self.set_chat_display_content(msgs)
 
-    def set_chat_display_content(self, text):
+    def set_chat_display_content(self, msg_list):
         self.chat_display.config(state=tk.NORMAL)
         self.chat_display.delete('1.0', tk.END)
-        self.chat_display.insert(tk.END, text)
+        for msg in msg_list:
+            self.insert_msg_to_widget(msg)
         self.chat_display.see(tk.END)
         self.chat_display.config(state=tk.DISABLED)
 
-    def append_chat_msg(self, target_key, sender, message):
-        formatted = f"[{sender}]: {message}\n"
-        
-        # Save to history
+    def insert_msg_to_widget(self, msg):
+        sender = msg["sender"]
+        text = msg["content"]
+        timestamp = msg["ts"]
+        is_sys = msg.get("sys", False)
+
+        if is_sys:
+            self.chat_display.insert(tk.END, f"{text}\n", "sys_msg")
+        elif sender == self.username:
+            header = f"You • {timestamp}\n"
+            body = f"{text}\n"
+            self.chat_display.insert(tk.END, header, "me_header")
+            self.chat_display.insert(tk.END, body, "me_bubble")
+        else:
+            header = f"{sender} • {timestamp}\n"
+            body = f"{text}\n"
+            self.chat_display.insert(tk.END, header, "other_header")
+            self.chat_display.insert(tk.END, body, "other_bubble")
+
+    def append_chat_msg(self, target_key, sender, message, timestamp=None, is_history=False):
+        if not timestamp:
+            timestamp = time.strftime("%H:%M:%S")
+
+        msg_obj = {"sender": sender, "content": message, "ts": timestamp}
+
         if target_key not in self.chat_histories:
-            self.chat_histories[target_key] = ""
-        self.chat_histories[target_key] += formatted
-        
-        # If currently active tab, update screen
-        if self.current_target == target_key:
-            self.chat_display.config(state=tk.NORMAL)
-            self.chat_display.insert(tk.END, formatted)
-            self.chat_display.see(tk.END)
-            self.chat_display.config(state=tk.DISABLED)
+            self.chat_histories[target_key] = []
             
-        # Highlight in listbox if not active (basic unread alert logic)
+        # Avoid duplicate history records (e.g. history messages matching standard updates)
+        history_list = self.chat_histories[target_key]
+        is_duplicate = any(m["sender"] == sender and m["content"] == message and m["ts"] == timestamp for m in history_list)
+        
+        if not is_duplicate:
+            if is_history:
+                # Insert at correct location if loading historic messages
+                history_list.append(msg_obj)
+                # Sort history lists based on timestamp
+                history_list.sort(key=lambda m: m["ts"])
+            else:
+                history_list.append(msg_obj)
+
+        if self.current_target == target_key:
+            # Refresh complete pane to keep order correct
+            self.set_chat_display_content(self.chat_histories[target_key])
+            
         self.update_targets_listbox_selection()
 
     def append_system_msg(self, target_key, message):
-        formatted = f"📢 [SYSTEM] {message}\n"
+        if not target_key: return
+        msg_obj = {"sender": "SYSTEM", "content": f"📢 {message}", "ts": "", "sys": True}
         
         if target_key not in self.chat_histories:
-            self.chat_histories[target_key] = ""
-        self.chat_histories[target_key] += formatted
-        
+            self.chat_histories[target_key] = []
+        self.chat_histories[target_key].append(msg_obj)
+
         if self.current_target == target_key:
             self.chat_display.config(state=tk.NORMAL)
-            self.chat_display.insert(tk.END, formatted)
+            self.insert_msg_to_widget(msg_obj)
             self.chat_display.see(tk.END)
             self.chat_display.config(state=tk.DISABLED)
 
     def update_targets_listbox_selection(self):
-        # Keeps selection highlight consistent with current_target
         for i in range(self.targets_listbox.size()):
             name = self.targets_listbox.get(i)
-            resolved = name.replace("💬 [Room] ", "") if "[Room]" in name else "PM:" + name.replace("🔒 [PM] ", "")
+            resolved = name.replace("💬 Room: ", "") if "Room: " in name else "PM:" + name.replace("🔒 PM: ", "")
             if resolved == self.current_target:
                 self.targets_listbox.select_set(i)
                 break
 
-    def update_available_rooms(self, rooms):
-        # We can print these to the system console, but let's show status count
-        pass
+    def update_stats_display(self):
+        self.stats_listbox.delete(0, tk.END)
+        
+        # Insert online users
+        for u in sorted(self.online_users_list):
+            lbl = f"👤 [User] {u} (You)" if u == self.username else f"👤 [User] {u}"
+            self.stats_listbox.insert(tk.END, lbl)
 
-    def update_online_users(self, users):
-        count_users = len(users)
-        self.users_lbl.config(text=f"Users online: {count_users} | Targets: {len(self.chat_histories)}")
+        # Insert active server rooms
+        for r in sorted(self.active_rooms_list):
+            self.stats_listbox.insert(tk.END, f"🏠 [Room] {r}")
 
-        # Create quick button links on user list if needed, or just let users type PM target.
-        # To make it visual, we can pop up a PM target selector or dynamically check online users.
+        self.users_lbl.config(text=f"Users online: {len(self.online_users_list)} | Active rooms: {len(self.active_rooms_list)}")
 
     def on_closing(self):
         self.stop_event.set()
         if self.sock:
             try:
-                # Notify exit
                 self.sock.sendall(self.pack_msg("QUIT"))
             except:
                 pass
