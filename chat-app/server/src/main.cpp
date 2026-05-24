@@ -16,7 +16,6 @@ int main(int argc, char* argv[]) {
 
         boost::asio::io_context io_context;
 
-        // Set up signal handling for graceful shutdown (SIGINT, SIGTERM)
         boost::asio::signal_set signals(io_context, SIGINT, SIGTERM);
         signals.async_wait(
             [&io_context](const boost::system::error_code& /*ec*/, int signal) {
@@ -24,7 +23,6 @@ int main(int argc, char* argv[]) {
                 io_context.stop();
             });
 
-        // Initialize chat server
         chat::chat_server server(io_context, port);
 
         std::cout << "[SERVER] Run loop active. Waiting for clients..." << std::endl;

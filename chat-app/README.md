@@ -1,120 +1,149 @@
-# Real-time Chat Application (Boost.Asio C++17)
+# High-Performance Asynchronous Chat Application (C++ Boost.Asio)
 
-Dự án này là một ứng dụng **Real-time Chat Client-Server** hiệu năng cao, xây dựng trên mô hình I/O bất đồng bộ (Asynchronous Network I/O) sử dụng thư viện **Boost.Asio** trong C++17. Ứng dụng hỗ trợ đa phòng chat (room), nhắn tin riêng tư (private message), quản lý trạng thái online/offline của người dùng, đóng gói tin nhắn dạng Length-Prefix Framing và vận hành dễ dàng thông qua Docker & Makefiles.
-
----
-
-## Tính năng chính
-
-### 1. Kiến trúc mạng & Hiệu năng
-- **Asynchronous Processing**: Server xử lý tất cả các kết nối client đồng thời trên một luồng I/O bất đồng bộ bằng `boost::asio::io_context`, giảm thiểu chi phí chuyển ngữ cảnh (context switch) của CPU so với mô hình đa luồng truyền thống (thread-per-connection).
-- **Message Framing (Length-Prefix)**: Giải quyết triệt để vấn đề "dính gói" (packet fragmentation) và "đọc thiếu" (partial read) trên giao thức TCP bằng cách tiền tố hóa mỗi gói tin gửi đi bằng `[4 byte độ dài payload (Big Endian)]` + `[Payload]`.
-- **Graceful Shutdown**: Server bắt các tín hiệu hệ thống (`SIGINT`, `SIGTERM`) để đóng sạch sẽ mọi kết nối của client, giải phóng tài nguyên socket và kết thúc luồng hoạt động mà không bị crash.
-
-### 2. Tính năng Chat (Application Layer)
-- **Đăng ký tài khoản tạm thời**: Nhập username khi kết nối; tự động kiểm tra trùng lặp trên server.
-- **Quản lý phòng (Room)**:
-  - Lệnh `/rooms` để liệt kê các phòng chat đang hoạt động.
-  - Lệnh `/join <room_name>` để tham gia vào phòng chat (tạo mới nếu phòng chưa tồn tại).
-  - Lệnh `/leave <room_name>` để rời phòng.
-  - Tự động dọn dẹp và giải phóng tài nguyên phòng chat khi không còn ai tham gia.
-  - Gửi tin nhắn công khai trong phòng chat qua lệnh `/msg <room_name> <nội dung>`.
-- **Tin nhắn riêng tư (Private Message)**: Gửi tin nhắn trực tiếp 1-1 giữa các user thông qua lệnh `/pm <username> <nội dung>`.
-- **Thông báo sự kiện**: Tự động thông báo tới các thành viên trong phòng khi có user khác join/leave.
-- **Trạng thái online**: Xem danh sách các user đang hoạt động qua lệnh `/users`.
-- **Xử lý ngắt kết nối đột ngột**: Cập nhật tức thời trạng thái online, rời khỏi toàn bộ phòng đang tham gia và thông báo cho các người dùng khác khi có client mất kết nối.
+Dự án này là một hệ thống **Real-time Chat Client-Server** hiệu năng cao, viết bằng C++ sử dụng thư viện **Boost.Asio** để xử lý hàng trăm kết nối đồng thời theo mô hình mạng bất đồng bộ (Asynchronous Network I/O). Dự án được thiết kế chuẩn chỉ, sạch sẽ, phân chia cấu trúc rõ ràng giữa Headers (`include/`) và Source Files (`src/`), hỗ trợ lưu trữ Database persistent, heartbeat giám sát kết nối và chống spam.
 
 ---
 
-## Cấu trúc thư mục
+## Kiến trúc hệ thống
 
 ```text
-chat-app/
-├── server/
-│   ├── src/
-│   │   ├── main.cpp            # Khởi tạo io_context, signal_set và chạy chat_server
-│   │   ├── chat_server.hpp/cpp # Quản lý acceptor, vòng lặp accept, session pool và phòng chat
-│   │   ├── session.hpp/cpp     # Phiên làm việc của 1 client, xử lý async_read/write length-prefix
-│   │   ├── room.hpp/cpp        # Quản lý danh sách thành viên trong phòng, broadcast tin nhắn
-│   │   └── protocol.hpp        # Parser tin nhắn (phân tách '|') và utility đóng gói frame
-│   ├── Makefile                # Compile server trên môi trường Linux
-│   └── Dockerfile              # Multi-stage Dockerfile tối ưu hóa kích thước image cho server
-├── client/
-│   ├── src/
-│   │   ├── main.cpp            # Vòng lặp đọc CLI input và thực thi các lệnh chat
-│   │   └── chat_client.hpp/cpp # Quản lý kết nối client, luồng nhận tin nhắn ngầm
-│   └── Makefile                # Compile client trên Linux
-├── docker-compose.yml          # Triển khai nhanh cụm Server bằng Docker Compose
-└── README.md                   # Tài liệu hướng dẫn dự án
+┌──────────────────────┐
+│  Chat Client (C++)   │  ◄─── ANSI terminal colors
+│  - Async read thread │  ◄─── Command menus (/join, /leave, /pub, /msg)
+│  - Auto-reconnect    │  ◄─── Auto PING-PONG keepalive
+└──────────┬───────────┘
+           │ TCP (Length-Prefix Frame: [4 byte length] + [Payload])
+           ▼
+┌────────────────────────────────────────────────────────┐
+│  Chat Server (Boost.Asio C++17)                        │
+│  ┌────────────────┐                                    │
+│  │    Acceptor    │ ◄─── Async connection accept loops │
+│  └───────┬────────┘                                    │
+│          ▼                                             │
+│  ┌────────────────┐                                    │
+│  │    Session     │ ◄─── One session per client        │
+│  └───────┬────────┘      - Anti-Spam Rate Limit        │
+│          │               - Heartbeat Timeout Check     │
+│          ▼                                             │
+│  ┌────────────────┐      ┌────────────────┐            │
+│  │  Room Manager  │ ◄─── │  User Manager  │            │
+│  └───────┬────────┘      └────────┬───────┘            │
+│          ▼                        ▼                    │
+│  ┌────────────────────────────────────────┐            │
+│  │   Secure File-Database (SHA-256 Auth)  │            │
+│  └────────────────────────────────────────┘            │
+└────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Chi tiết Giao thức truyền thông (Protocol)
+## Cấu trúc thư mục dự án
 
-Mỗi tin nhắn gửi qua TCP bao gồm **4 byte độ dài** đi trước payload.
-Dưới đây là cấu trúc chuỗi Payload (các tham số phân tách bằng ký tự `|`):
-
-| Hướng gửi | Lệnh / Sự kiện | Cú pháp Payload | Mô tả |
-| :--- | :--- | :--- | :--- |
-| **Client → Server** | Đăng nhập | `LOGIN\|username` | Yêu cầu đăng ký tên đăng nhập |
-| **Server → Client** | Đăng nhập thành công | `LOGIN_SUCCESS\|username` | Xác nhận đăng nhập thành công |
-| **Server → Client** | Đăng nhập thất bại | `LOGIN_FAIL\|reason` | Từ chối đăng nhập (trùng tên, tên trống,...) |
-| **Client → Server** | Tham gia phòng | `JOIN\|room_name` | Tham gia phòng chat `room_name` |
-| **Server → Client** | Xác nhận vào phòng | `ROOM_JOINED\|room_name` | Trả về thông báo bạn đã vào phòng |
-| **Server → Client** | User khác vào phòng | `JOIN_NOTIFY\|room_name\|username` | Thông báo cho các thành viên trong phòng |
-| **Client → Server** | Rời phòng | `LEAVE\|room_name` | Rời khỏi phòng chat `room_name` |
-| **Server → Client** | Xác nhận rời phòng | `ROOM_LEFT\|room_name` | Trả về thông báo bạn đã rời phòng |
-| **Server → Client** | User khác rời phòng | `LEAVE_NOTIFY\|room_name\|username` | Thông báo cho các thành viên trong phòng |
-| **Client → Server** | Chat trong phòng | `MSG\|room_name\|content` | Gửi tin nhắn tới phòng |
-| **Server → Client** | Nhận tin phòng | `ROOM_MSG\|room_name\|sender\|content` | Truyền tin nhắn phòng tới các thành viên |
-| **Client → Server** | Chat riêng tư | `PRIVATE\|target_user\|content` | Gửi tin nhắn mật tới `target_user` |
-| **Server → Client** | Nhận tin riêng tư | `PRIVATE_MSG\|sender\|content` | Gửi tin nhắn mật tới người nhận |
-| **Server → Client** | Xác nhận tin riêng tư | `PRIVATE_CONFIRM\|target_user\|content` | Gửi xác nhận hiển thị lại cho người gửi |
-| **Client → Server** | Xem danh sách phòng | `LIST_ROOMS` | Yêu cầu danh sách các phòng |
-| **Server → Client** | Trả về danh sách phòng | `ROOMS\|room1,room2,...` | Trả về chuỗi tên phòng cách nhau bởi dấu phẩy |
-| **Client → Server** | Xem danh sách user | `LIST_USERS` | Yêu cầu danh sách người dùng online |
-| **Server → Client** | Trả về danh sách user | `USERS\|user1,user2,...` | Trả về chuỗi username cách nhau bởi dấu phẩy |
-| **Client → Server** | Thoát | `QUIT` | Thông báo đóng kết nối sạch sẽ |
+```text
+chat-application/
+├── server/
+│   ├── include/                # Tất cả file tiêu đề (.hpp) của Server
+│   │   ├── chat_server.hpp     # Quản lý acceptor, sessions và phòng chat
+│   │   ├── session.hpp         # Xử lý kết nối, heartbeat và rate limit cho từng client
+│   │   ├── room.hpp            # Giao diện participant và lớp phòng chat
+│   │   ├── user.hpp            # Đối tượng thông tin người dùng
+│   │   └── database.hpp        # Cơ sở dữ liệu lưu file + SHA-256 Hasher
+│   ├── src/                    # Triển khai mã nguồn (.cpp) của Server
+│   │   ├── main.cpp
+│   │   ├── chat_server.cpp
+│   │   ├── session.cpp
+│   │   ├── room.cpp
+│   │   ├── user.cpp
+│   │   └── protocol.cpp        # Đóng gói và giải mã khung truyền tin length-prefix
+│   ├── Makefile                # Hỗ trợ biên dịch server trên Linux
+│   └── Dockerfile              # Dockerfile đa tầng (multi-stage) tối ưu dung lượng
+├── client/
+│   ├── include/                # File tiêu đề của Client
+│   │   └── chat_client.hpp     # Socket client kết nối và luồng đọc ghi ngầm
+│   ├── src/                    # Mã nguồn triển khai Client
+│   │   ├── main.cpp            # Menu điều khiển và nhập lệnh console
+│   │   └── chat_client.cpp     # Logic kết nối bất đồng bộ và tự động Reconnect
+│   └── Makefile                # Biên dịch client console C++
+├── docker-compose.yml          # Khởi chạy server container nhanh chóng
+├── scripts/
+│   └── load_test.py            # Script Python asyncio test tải 100 clients đồng thời
+└── README.md                   # Tài liệu hướng dẫn
+```
 
 ---
 
-## Hướng dẫn Build và Chạy dự án
+## Thiết kế Giao thức truyền thông (Protocol)
 
-Yêu cầu tiên quyết: Máy của bạn đã cài đặt **Docker** & **docker-compose** (đối với Server) và thư viện **Boost C++** (đối với Client).
+Mỗi gói tin TCP gửi đi đều được tiền tố hóa bằng **4 byte độ dài** (Big Endian) để chống dính gói.
+Định dạng chuỗi Payload (phân tách bởi ký tự `|`):
 
-### 1. Khởi động Server bằng Docker Compose (Khuyên dùng)
-Việc sử dụng Docker giúp bạn bỏ qua các công đoạn cài đặt Boost phức tạp trên máy cục bộ.
-Chạy lệnh sau tại thư mục gốc `chat-app`:
+### 1. Client → Server
+- `REGISTER|username|password` : Đăng ký tài khoản mật khẩu mới.
+- `LOGIN|username|password` : Đăng nhập tài khoản.
+- `JOIN|room_name` : Tham gia phòng chat `room_name`.
+- `LEAVE` : Rời khỏi phòng chat hiện tại.
+- `MSG|room_name|content` : Gửi tin nhắn công khai tới phòng.
+- `PRIVATE|target_user|content` : Gửi tin nhắn riêng tư tới `target_user`.
+- `LIST_ROOMS` : Yêu cầu danh sách phòng.
+- `LIST_USERS` : Yêu cầu danh sách user online.
+- `GET_HISTORY|target` : Tải lịch sử chat (target là tên phòng hoặc cuộc PM).
+- `PING` : Client gửi kiểm tra kết nối.
+- `QUIT` : Đóng kết nối sạch sẽ.
 
+### 2. Server → Client
+- `OK|message` : Phản hồi xác nhận thành công.
+- `ERROR|code|description` : Phản hồi lỗi (Ví dụ: `ERROR|AUTH_FAILED|Invalid credentials`).
+- `SYSTEM|message` : Tin nhắn thông báo hệ thống chung.
+- `USER_JOIN|room|username` : Thông báo user khác join room.
+- `USER_LEAVE|room|username` : Thông báo user khác leave room.
+- `MSG|room|sender|content|timestamp` : Phát tin nhắn phòng tới các thành viên.
+- `PRIVATE|sender|content|timestamp` : Phát tin nhắn riêng tư tới người nhận & người gửi.
+- `ROOM_LIST|room1,room2,...` : Trả về danh sách phòng.
+- `USER_LIST|user1,user2,...` : Trả về danh sách user.
+- `PONG` : Server phản hồi heartbeat.
+
+---
+
+## Hướng dẫn cài đặt và khởi chạy
+
+### 1. Khởi động Server (bằng Docker)
+Cách nhanh nhất và sạch sẽ nhất là chạy server qua Docker để không cần cài Boost trên máy host:
 ```bash
 docker-compose up --build
 ```
-Server sẽ được build tự động và lắng nghe trên cổng `8080`.
+Server sẽ chạy và lắng nghe ở cổng `8080`.
 
-*(Hoặc nếu bạn chạy trên Linux có sẵn Boost và muốn build thủ công không qua Docker: `cd server && make` và chạy `./chat_server 8080`)*
+*(Hoặc biên dịch cục bộ nếu có sẵn Boost trên Linux: `cd server && make && ./chat_server 8080`)*
 
-### 2. Biên dịch Client (C++ CLI)
-Đảm bảo máy bạn đã cài thư viện Boost (ví dụ trên Ubuntu/Debian: `sudo apt-get install libboost-system-dev libboost-dev`).
-Tại thư mục gốc `chat-app`, chuyển tới thư mục client và tiến hành build:
-
+### 2. Biên dịch và chạy Client Console (C++)
+Đảm bảo bạn đã cài đặt Boost C++ trên máy host.
 ```bash
 cd client
 make
-```
-File thực thi `chat_client` sẽ được tạo ra.
-
-### 3. Trải nghiệm ứng dụng Chat
-Mở nhiều cửa sổ terminal khác nhau để giả lập nhiều user và chạy client:
-
-```bash
 ./chat_client 127.0.0.1 8080
 ```
+- Bạn có thể lựa chọn đăng nhập (`Login`) hoặc đăng ký tài khoản (`Register`) ngay trên menu giao diện Console.
+- Client hỗ trợ **tự động Reconnect**: Nếu Server tắt hoặc mạng bị đứt, client sẽ chuyển sang trạng thái chờ và kết nối lại ngay khi server online mà bạn không cần mở lại ứng dụng.
+- Client hiển thị màu sắc ANSI phân biệt: Xanh lá (Tin nhắn riêng), Xanh Cyan (Tin nhắn phòng), Vàng (Thông báo hệ thống), Đỏ (Lỗi).
 
-1. **Đăng nhập**: Nhập username bạn muốn (ví dụ: `Alice`).
-2. **Liệt kê phòng**: Gõ `/rooms` (ban đầu chưa có phòng nào).
-3. **Tham gia phòng**: Gõ `/join lobby`.
-4. **Liệt kê user online**: Gõ `/users`.
-5. **Gửi tin nhắn trong phòng**: Gõ `/msg lobby Hello everyone!`.
-6. **Chat riêng tư**: Mở terminal thứ hai, đăng nhập bằng tên `Bob`, gõ `/pm Alice Hi Alice, this is private message.`.
-7. **Thoát**: Gõ `/quit` để ngắt kết nối an toàn.
+### Các lệnh được hỗ trợ tại Client:
+- `/rooms` : Xem danh sách phòng đang hoạt động.
+- `/users` : Xem danh sách người dùng online.
+- `/join <room_name>` : Vào phòng chat.
+- `/leave` : Rời phòng chat hiện tại.
+- `/pub <room_name> <nội_dung>` : Gửi tin nhắn công khai vào phòng chat.
+- `/msg <username> <nội_dung>` : Gửi tin nhắn riêng tư tới user chỉ định.
+- `/help` : Hiển thị bảng trợ giúp lệnh.
+- `/quit` : Thoát ứng dụng.
+
+---
+
+## Kiểm thử tải (Load Testing)
+
+Chúng ta có một script Python giả lập kiểm thử tải bất đồng bộ cực kỳ mạnh mẽ tại `scripts/load_test.py`. Script này sử dụng `asyncio` để kết nối **100 client đồng thời**, thực hiện đăng ký, đăng nhập, join phòng, và liên tục spam tin nhắn cũng như duy trì Ping-Pong liên tục lên Server C++ nhằm kiểm tra độ chịu tải.
+
+Chạy script test tải:
+```bash
+python scripts/load_test.py
+```
+Sau khi hoàn thành, script sẽ in ra báo cáo chi tiết về tốc độ phản hồi, lượng tin nhắn gửi nhận thành công và tỷ lệ thất bại.

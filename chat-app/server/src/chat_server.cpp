@@ -52,20 +52,7 @@ void chat_server::unregister_session(const std::shared_ptr<chat_session>& sessio
         online_users_.erase(user_it);
     }
     
-    std::vector<std::string> rooms_to_clean;
-    for (auto& pair : rooms_) {
-        pair.second->leave(session);
-        pair.second->deliver(protocol::encode("LEAVE_NOTIFY", {pair.first, username}));
-        
-        if (pair.second->empty()) {
-            rooms_to_clean.push_back(pair.first);
-        }
-    }
-    
-    for (const auto& room_name : rooms_to_clean) {
-        rooms_.erase(room_name);
-        std::cout << "[SERVER] Deleted empty room: " << room_name << std::endl;
-    }
+    leave_all_rooms(session);
 }
 
 void chat_server::join_room(const std::shared_ptr<chat_session>& session, const std::string& room_name) {
@@ -78,16 +65,26 @@ void chat_server::join_room(const std::shared_ptr<chat_session>& session, const 
     }
     
     it->second->join(session);
-    session->deliver(protocol::encode("ROOM_JOINED", {room_name}));
-    it->second->deliver(protocol::encode("JOIN_NOTIFY", {room_name, session->get_username()}), session);
+    
+    // Spec: Server responds OK|Joined room
+    session->deliver(protocol::encode("OK", {"Joined room."}));
+    
+    // Spec: USER_JOIN|room|username
+    it->second->deliver(protocol::encode("USER_JOIN", {room_name, session->get_username()}), session);
+    
+    // Auto pull and send room history to client
+    send_history_to_session(session, room_name);
 }
 
 void chat_server::leave_room(const std::shared_ptr<chat_session>& session, const std::string& room_name) {
     auto it = rooms_.find(room_name);
     if (it != rooms_.end()) {
         it->second->leave(session);
-        it->second->deliver(protocol::encode("LEAVE_NOTIFY", {room_name, session->get_username()}));
-        session->deliver(protocol::encode("ROOM_LEFT", {room_name}));
+        
+        // Spec: USER_LEAVE|room|username
+        it->second->deliver(protocol::encode("USER_LEAVE", {room_name, session->get_username()}));
+        
+        session->deliver(protocol::encode("OK", {"Left room."}));
         
         if (it->second->empty()) {
             rooms_.erase(it);
@@ -96,17 +93,50 @@ void chat_server::leave_room(const std::shared_ptr<chat_session>& session, const
     }
 }
 
+void chat_server::leave_all_rooms(const std::shared_ptr<chat_session>& session) {
+    std::vector<std::string> rooms_to_clean;
+    std::string username = session->get_username();
+    
+    for (auto& pair : rooms_) {
+        // We look at all rooms where this user is present
+        auto participants = pair.second->get_participants();
+        if (std::find(participants.begin(), participants.end(), username) != participants.end()) {
+            pair.second->leave(session);
+            
+            // Spec: USER_LEAVE|room|username
+            pair.second->deliver(protocol::encode("USER_LEAVE", {pair.first, username}));
+            
+            if (pair.second->empty()) {
+                rooms_to_clean.push_back(pair.first);
+            }
+        }
+    }
+    
+    session->deliver(protocol::encode("OK", {"Left all rooms."}));
+
+    for (const auto& room_name : rooms_to_clean) {
+        rooms_.erase(room_name);
+        std::cout << "[SERVER] Deleted empty room: " << room_name << std::endl;
+    }
+}
+
 void chat_server::deliver_to_room(const std::string& room_name, const std::string& msg, const std::shared_ptr<chat_session>& sender) {
     auto it = rooms_.find(room_name);
     if (it != rooms_.end()) {
-        // Save to Database History
         db_.save_message(sender->get_username(), room_name, msg);
 
-        // Broadcast to Room
-        std::string formatted = protocol::encode("ROOM_MSG", {room_name, sender->get_username(), msg});
-        it->second->deliver(formatted);
+        auto now = std::chrono::system_clock::now();
+        auto time = std::chrono::system_clock::to_time_t(now);
+        std::stringstream ss;
+        ss << std::put_time(std::localtime(&time), "%Y-%m-%d %H:%M:%S");
+
+        // Spec: MSG|room|from_user|content|timestamp
+        std::string formatted = protocol::encode("MSG", {room_name, sender->get_username(), msg, ss.str()});
+        
+        // Deliver to everyone in the room (including sender to confirm receipt)
+        it->second->deliver(formatted, nullptr);
     } else {
-        sender->deliver(protocol::encode("ERROR", {"Room " + room_name + " does not exist."}));
+        sender->deliver(protocol::encode("ERROR", {"NOT_IN_ROOM", "Room " + room_name + " does not exist."}));
     }
 }
 
@@ -114,27 +144,28 @@ bool chat_server::deliver_private(const std::string& sender_username, const std:
     auto target_it = online_users_.find(target_username);
     auto sender_it = online_users_.find(sender_username);
     
-    // Save PM to Database History
     db_.save_message(sender_username, "PM:" + target_username, content);
 
+    auto now = std::chrono::system_clock::now();
+    auto time = std::chrono::system_clock::to_time_t(now);
+    std::stringstream ss;
+    ss << std::put_time(std::localtime(&time), "%Y-%m-%d %H:%M:%S");
+
+    // Spec: PRIVATE|from_user|content|timestamp
+    std::string formatted_msg = protocol::encode("PRIVATE", {sender_username, content, ss.str()});
+
     if (target_it != online_users_.end()) {
-        std::string formatted_msg = protocol::encode("PRIVATE_MSG", {sender_username, content});
         target_it->second->deliver(formatted_msg);
         
-        // Confirm to sender
+        // Confirm to sender too
         if (sender_it != online_users_.end() && sender_username != target_username) {
-            sender_it->second->deliver(protocol::encode("PRIVATE_CONFIRM", {target_username, content}));
+            sender_it->second->deliver(protocol::encode("PRIVATE", {target_username, content, ss.str()}));
         }
         return true;
     }
     
-    // Target is offline, but message is saved to history. 
-    // We send confirm to sender but inform recipient is offline
-    if (sender_it != online_users_.end()) {
-        sender_it->second->deliver(protocol::encode("PRIVATE_CONFIRM", {target_username, content}));
-        sender_it->second->deliver(protocol::encode("ERROR", {"User " + target_username + " is offline. Message saved to history."}));
-    }
-    return true;
+    // Target is offline
+    return false;
 }
 
 std::vector<std::string> chat_server::get_rooms() const {
@@ -153,7 +184,6 @@ std::vector<std::string> chat_server::get_users() const {
     return online_names;
 }
 
-// Database wrappers
 bool chat_server::register_db_user(const std::string& username, const std::string& password) {
     return db_.register_user(username, password);
 }
@@ -169,7 +199,13 @@ bool chat_server::is_user_online(const std::string& username) const {
 void chat_server::send_history_to_session(const std::shared_ptr<chat_session>& session, const std::string& target) {
     std::vector<DBMessage> history = db_.get_history(target);
     for (const auto& msg : history) {
-        session->deliver(protocol::encode("HISTORY_MSG", {target, msg.sender, msg.content, msg.timestamp}));
+        if (target.rfind("PM:", 0) == 0) {
+            // Send private history: PRIVATE|from_user|content|timestamp
+            session->deliver(protocol::encode("PRIVATE", {msg.sender, msg.content, msg.timestamp}));
+        } else {
+            // Send room history: MSG|room|from_user|content|timestamp
+            session->deliver(protocol::encode("MSG", {target, msg.sender, msg.content, msg.timestamp}));
+        }
     }
 }
 

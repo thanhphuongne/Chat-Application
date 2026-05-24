@@ -9,7 +9,7 @@ namespace chat {
 
 class chat_participant {
 public:
-    virtual ~chat_participant() {}
+    virtual ~chat_participant() = default;
     virtual void deliver(const std::string& msg) = 0;
     virtual std::string get_username() const = 0;
 };

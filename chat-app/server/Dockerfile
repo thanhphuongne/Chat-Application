@@ -9,8 +9,9 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Copy Makefile and source code
+# Copy Makefiles, headers and sources
 COPY Makefile ./
+COPY include/ ./include/
 COPY src/ ./src/
 
 # Compile the server
@@ -19,7 +20,6 @@ RUN make clean && make
 # Run stage
 FROM debian:bookworm-slim
 
-# Install only runtime dependencies
 RUN apt-get update && apt-get install -y \
     libboost-system1.81.0 \
     libstdc++6 \

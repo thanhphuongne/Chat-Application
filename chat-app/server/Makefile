@@ -1,5 +1,5 @@
 CXX = g++
-CXXFLAGS = -std=c++17 -Wall -Wextra -O3 -pthread
+CXXFLAGS = -std=c++17 -Wall -Wextra -O3 -pthread -Iinclude
 LDFLAGS = -lboost_system
 
 SRC_DIR = src

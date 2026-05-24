@@ -2,13 +2,15 @@
 #include "chat_server.hpp"
 #include "protocol.hpp"
 #include <iostream>
+#include <chrono>
+#include <iomanip>
 
 namespace chat {
 
 chat_session::chat_session(boost::asio::ip::tcp::socket socket, chat_server& server)
     : socket_(std::move(socket)),
       server_(server),
-      username_("Anonymous"),
+      user_("Anonymous"),
       is_logged_in_(false),
       heartbeat_timer_(socket_.get_executor()),
       is_alive_(true),
@@ -23,7 +25,7 @@ chat_session::~chat_session() {
     is_stopped_ = true;
     boost::system::error_code ec;
     heartbeat_timer_.cancel(ec);
-    std::cout << "[SESSION] Destroyed session for user: " << username_ << std::endl;
+    std::cout << "[SESSION] Destroyed session for user: " << user_.get_username() << std::endl;
 }
 
 boost::asio::ip::tcp::socket& chat_session::socket() {
@@ -31,7 +33,7 @@ boost::asio::ip::tcp::socket& chat_session::socket() {
 }
 
 std::string chat_session::get_username() const {
-    return username_;
+    return user_.get_username();
 }
 
 void chat_session::start() {
@@ -116,22 +118,19 @@ void chat_session::start_heartbeat() {
         if (ec || is_stopped_) return;
 
         if (!is_alive_) {
-            // Client did not reply to PING and sent no messages for 15-30s
-            std::cout << "[SERVER] Heartbeat timeout for user " << username_ << ". Disconnecting..." << std::endl;
+            std::cout << "[SERVER] Heartbeat timeout for user " << user_.get_username() << ". Disconnecting..." << std::endl;
             handle_error(boost::asio::error::connection_aborted, "heartbeat timeout");
             return;
         }
 
-        // Send PING and reset flag
         is_alive_ = false;
         send_ping();
-        
-        // Loop heartbeat wait
         start_heartbeat();
     });
 }
 
 void chat_session::send_ping() {
+    // Send PING as text protocol frame
     deliver(protocol::encode("PING"));
 }
 
@@ -139,12 +138,10 @@ bool chat_session::check_rate_limit() {
     auto now = std::chrono::steady_clock::now();
     
     if (now < silence_until_) {
-        // Still silenced
         return false;
     }
 
     if (now - rate_limit_start_ > std::chrono::seconds(1)) {
-        // Reset window
         rate_limit_start_ = now;
         message_count_in_window_ = 0;
     }
@@ -152,8 +149,8 @@ bool chat_session::check_rate_limit() {
     message_count_in_window_++;
     if (message_count_in_window_ > 5) {
         silence_until_ = now + std::chrono::seconds(5);
-        deliver(protocol::encode("SPAM_WARNING", {"You are sending messages too fast. Silenced for 5 seconds."}));
-        std::cout << "[SERVER] User " << username_ << " silenced due to spamming." << std::endl;
+        deliver(protocol::encode("ERROR", {"RATE_LIMIT_EXCEEDED", "You are sending messages too fast. Silenced for 5 seconds."}));
+        std::cout << "[SERVER] User " << user_.get_username() << " silenced due to spamming." << std::endl;
         return false;
     }
 
@@ -161,39 +158,42 @@ bool chat_session::check_rate_limit() {
 }
 
 void chat_session::handle_message(const std::string& raw_msg) {
-    // Reset alive flag since we received data
     is_alive_ = true;
 
     protocol::Message parsed_msg = protocol::parse(raw_msg);
 
     if (parsed_msg.type == "PONG") {
-        // Heartbeat response, nothing to process
+        return;
+    }
+    
+    if (parsed_msg.type == "PING") {
+        deliver(protocol::encode("PONG"));
         return;
     }
 
     if (parsed_msg.type == "REGISTER") {
         if (parsed_msg.args.size() < 2) {
-            deliver(protocol::encode("REGISTER_FAIL", {"Username and password cannot be empty."}));
+            deliver(protocol::encode("ERROR", {"REG_FAILED", "Username and password cannot be empty."}));
             return;
         }
         std::string requested_username = parsed_msg.args[0];
         std::string password = parsed_msg.args[1];
         
         if (server_.register_db_user(requested_username, password)) {
-            deliver(protocol::encode("REGISTER_SUCCESS", {requested_username}));
+            deliver(protocol::encode("OK", {"Account registered successfully."}));
         } else {
-            deliver(protocol::encode("REGISTER_FAIL", {"Username already registered."}));
+            deliver(protocol::encode("ERROR", {"REG_FAILED", "Username already exists."}));
         }
         return;
     }
 
     if (parsed_msg.type == "LOGIN") {
         if (is_logged_in_) {
-            deliver(protocol::encode("LOGIN_FAIL", {"Already logged in."}));
+            deliver(protocol::encode("ERROR", {"ALREADY_LOGGED_IN", "Already logged in."}));
             return;
         }
         if (parsed_msg.args.size() < 2 || parsed_msg.args[0].empty() || parsed_msg.args[1].empty()) {
-            deliver(protocol::encode("LOGIN_FAIL", {"Credentials cannot be empty."}));
+            deliver(protocol::encode("ERROR", {"AUTH_FAILED", "Credentials cannot be empty."}));
             return;
         }
         
@@ -201,32 +201,30 @@ void chat_session::handle_message(const std::string& raw_msg) {
         std::string password = parsed_msg.args[1];
 
         if (server_.is_user_online(requested_username)) {
-            deliver(protocol::encode("LOGIN_FAIL", {"User is already online."}));
+            deliver(protocol::encode("ERROR", {"ALREADY_ONLINE", "User is already online."}));
             return;
         }
 
         if (server_.authenticate_db_user(requested_username, password)) {
             if (server_.register_user(shared_from_this(), requested_username)) {
-                username_ = requested_username;
+                user_.set_username(requested_username);
                 is_logged_in_ = true;
-                deliver(protocol::encode("LOGIN_SUCCESS", {username_}));
-                std::cout << "[INFO] User authenticated: " << username_ << std::endl;
+                deliver(protocol::encode("OK", {"Logged in successfully."}));
+                std::cout << "[INFO] User authenticated: " << user_.get_username() << std::endl;
             } else {
-                deliver(protocol::encode("LOGIN_FAIL", {"Could not bind session."}));
+                deliver(protocol::encode("ERROR", {"SERVER_ERROR", "Could not bind session."}));
             }
         } else {
-            deliver(protocol::encode("LOGIN_FAIL", {"Invalid username or password."}));
+            deliver(protocol::encode("ERROR", {"AUTH_FAILED", "Invalid username or password."}));
         }
         return;
     }
 
-    // All other commands require authentication
     if (!is_logged_in_) {
-        deliver(protocol::encode("ERROR", {"You must log in first."}));
+        deliver(protocol::encode("ERROR", {"UNAUTHORIZED", "You must log in first."}));
         return;
     }
 
-    // Anti-spam check
     if (!check_rate_limit()) {
         return;
     }
@@ -237,9 +235,8 @@ void chat_session::handle_message(const std::string& raw_msg) {
         server_.join_room(shared_from_this(), room_name);
     } 
     else if (parsed_msg.type == "LEAVE") {
-        if (parsed_msg.args.empty()) return;
-        std::string room_name = parsed_msg.args[0];
-        server_.leave_room(shared_from_this(), room_name);
+        // Spec has 'LEAVE' without args. Server will find rooms client is in and remove them.
+        server_.leave_all_rooms(shared_from_this());
     } 
     else if (parsed_msg.type == "MSG") {
         if (parsed_msg.args.size() < 2) return;
@@ -251,8 +248,8 @@ void chat_session::handle_message(const std::string& raw_msg) {
         if (parsed_msg.args.size() < 2) return;
         std::string target_user = parsed_msg.args[0];
         std::string content = parsed_msg.args[1];
-        if (!server_.deliver_private(username_, target_user, content)) {
-            deliver(protocol::encode("ERROR", {"User " + target_user + " is not online."}));
+        if (!server_.deliver_private(user_.get_username(), target_user, content)) {
+            deliver(protocol::encode("ERROR", {"USER_OFFLINE", "User " + target_user + " is offline."}));
         }
     } 
     else if (parsed_msg.type == "LIST_ROOMS") {
@@ -261,7 +258,7 @@ void chat_session::handle_message(const std::string& raw_msg) {
         for (size_t i = 0; i < rooms.size(); ++i) {
             rooms_list += (i > 0 ? "," : "") + rooms[i];
         }
-        deliver(protocol::encode("ROOMS", {rooms_list}));
+        deliver(protocol::encode("ROOM_LIST", {rooms_list}));
     } 
     else if (parsed_msg.type == "LIST_USERS") {
         std::vector<std::string> users = server_.get_users();
@@ -269,7 +266,7 @@ void chat_session::handle_message(const std::string& raw_msg) {
         for (size_t i = 0; i < users.size(); ++i) {
             users_list += (i > 0 ? "," : "") + users[i];
         }
-        deliver(protocol::encode("USERS", {users_list}));
+        deliver(protocol::encode("USER_LIST", {users_list}));
     } 
     else if (parsed_msg.type == "GET_HISTORY") {
         if (parsed_msg.args.empty()) return;
@@ -277,7 +274,7 @@ void chat_session::handle_message(const std::string& raw_msg) {
         server_.send_history_to_session(shared_from_this(), target);
     }
     else if (parsed_msg.type == "QUIT") {
-        std::cout << "[INFO] User requested quit: " << username_ << std::endl;
+        std::cout << "[INFO] User requested quit: " << user_.get_username() << std::endl;
         boost::system::error_code ec;
         socket_.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
         socket_.close(ec);
@@ -291,7 +288,7 @@ void chat_session::handle_error(const boost::system::error_code& ec, const std::
         heartbeat_timer_.cancel(timer_ec);
 
         if (ec != boost::asio::error::operation_aborted) {
-            std::cerr << "[INFO] Session error in context '" << context << "' for " << username_ 
+            std::cerr << "[INFO] Session error in context '" << context << "' for " << user_.get_username() 
                       << ": " << ec.message() << std::endl;
             server_.unregister_session(shared_from_this());
         }

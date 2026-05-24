@@ -1,5 +1,4 @@
 #include "room.hpp"
-#include <algorithm>
 #include <iostream>
 
 namespace chat {

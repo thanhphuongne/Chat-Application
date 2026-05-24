@@ -13,7 +13,6 @@
 
 namespace chat {
 
-// Simple, clean header-only SHA-256 implementation
 class SHA256 {
 public:
     static std::string hash(const std::string& input) {
@@ -23,18 +22,15 @@ public:
         std::vector<uint8_t> msg(input.begin(), input.end());
         uint64_t bit_len = msg.size() * 8;
         
-        // Pad message
         msg.push_back(0x80);
         while ((msg.size() * 8) % 512 != 448) {
             msg.push_back(0x00);
         }
         
-        // Append original length in bits as 64-bit big-endian integer
         for (int i = 7; i >= 0; --i) {
             msg.push_back(static_cast<uint8_t>((bit_len >> (i * 8)) & 0xFF));
         }
 
-        // Process message in 512-bit chunks
         for (size_t chunk = 0; chunk < msg.size() / 64; ++chunk) {
             uint32_t w[64] = {0};
             for (int i = 0; i < 16; ++i) {
@@ -94,7 +90,7 @@ private:
 
 struct DBMessage {
     std::string sender;
-    std::string target; // Room name or target username
+    std::string target;
     std::string content;
     std::string timestamp;
 };
@@ -107,7 +103,6 @@ public:
         history_file_ = db_dir_ + "/history.txt";
     }
 
-    // Attempt to register a user. Returns false if user already exists
     bool register_user(const std::string& username, const std::string& password) {
         std::lock_guard<std::mutex> lock(db_mutex_);
         if (user_exists_internal(username)) {
@@ -124,7 +119,6 @@ public:
         return false;
     }
 
-    // Authenticate user credentials
     bool authenticate_user(const std::string& username, const std::string& password) {
         std::lock_guard<std::mutex> lock(db_mutex_);
         std::ifstream file(users_file_);
@@ -140,7 +134,6 @@ public:
         return false;
     }
 
-    // Log chat message to database history
     void save_message(const std::string& sender, const std::string& target, const std::string& content) {
         std::lock_guard<std::mutex> lock(db_mutex_);
         std::ofstream file(history_file_, std::ios::app);
@@ -148,7 +141,6 @@ public:
             auto now = std::chrono::system_clock::now();
             auto time = std::chrono::system_clock::to_time_t(now);
             
-            // Clean content from '|' and newlines to preserve file format
             std::string clean_content = content;
             std::replace(clean_content.begin(), clean_content.end(), '|', ' ');
             std::replace(clean_content.begin(), clean_content.end(), '\n', ' ');
@@ -161,7 +153,6 @@ public:
         }
     }
 
-    // Retrieve recent history messages (limit 20)
     std::vector<DBMessage> get_history(const std::string& target, size_t limit = 20) {
         std::lock_guard<std::mutex> lock(db_mutex_);
         std::ifstream file(history_file_);
@@ -179,33 +170,15 @@ public:
                 std::getline(ss, db_target, '|') &&
                 std::getline(ss, content, '|')) {
                 
-                // Target could be a Room (e.g. "lobby") or a Private Conversation
-                // For PMs, we match either sender=A & target=B OR sender=B & target=A
                 bool match = false;
                 if (target.rfind("PM:", 0) == 0) {
                     std::string target_user = target.substr(3); // Remove "PM:"
-                    // Private message record target is just the recipient username
-                    if ((sender == target_user && db_target.rfind("PM:", 0) == 0 && db_target.substr(3) == "") || 
-                        (db_target == target) || 
-                        (sender == target_user && db_target.substr(0, 3) != "PM:") || // historical or legacy
-                        // Correct PM target matching:
-                        (db_target == "PM:" + sender && target == "PM:" + target_user) ||
-                        (db_target == "PM:" + target_user && target == "PM:" + sender) ||
-                        (db_target == "PM:" + target_user && sender == target_user) // self messaging
-                    ) {
-                        // Let's refine matching: PM target format is PM:recipient
-                        // In DB target can be "PM:recipient"
-                        // Or if sender is Alice and receiver is Bob, target in database is stored as "PM:Bob"
-                        // Match condition: (db_target == "PM:Bob" and sender == Alice and target_user == Bob)
-                        // OR (db_target == "PM:Alice" and sender == Bob and target_user == Bob)
-                        std::string pm_a = "PM:" + target_user;
-                        std::string pm_b = "PM:" + sender;
-                        if ((db_target == pm_a) || (db_target == pm_b && sender == target_user)) {
-                            match = true;
-                        }
+                    std::string pm_a = "PM:" + target_user;
+                    std::string pm_b = "PM:" + sender;
+                    if ((db_target == pm_a) || (db_target == pm_b && sender == target_user)) {
+                        match = true;
                     }
                 } else {
-                    // Room message matching
                     if (db_target == target) {
                         match = true;
                     }
@@ -217,7 +190,6 @@ public:
             }
         }
 
-        // Apply limit to recent messages
         if (all_matching.size() > limit) {
             return std::vector<DBMessage>(all_matching.end() - limit, all_matching.end());
         }

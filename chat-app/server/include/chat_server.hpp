@@ -22,6 +22,7 @@ public:
     
     void join_room(const std::shared_ptr<chat_session>& session, const std::string& room_name);
     void leave_room(const std::shared_ptr<chat_session>& session, const std::string& room_name);
+    void leave_all_rooms(const std::shared_ptr<chat_session>& session);
     void deliver_to_room(const std::string& room_name, const std::string& msg, const std::shared_ptr<chat_session>& sender);
     bool deliver_private(const std::string& sender_username, const std::string& target_username, const std::string& content);
     
